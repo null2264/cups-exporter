@@ -17,7 +17,9 @@ parser.add_argument(
 parser.add_argument("--cups-port", type=int,
                     help="The cups port to use", default=631)
 parser.add_argument(
-    "--cups-user", help="The user to connect with", default="default")
+    "--cups-user", help="The user to connect with", default="user")
+parser.add_argument(
+    "--cups-password", help="The user to connect with", default="password")
 parser.add_argument("--listen-port", type=int,
                     help="The port the exporter will listen on", default=9329)
 args = parser.parse_args()
@@ -28,7 +30,7 @@ class CUPSCollector:
     currently configured printers in cups
     """
 
-    def __init__(self, host, port, user):
+    def __init__(self, host, port, user, password):
         """Set cups connection parameters
 
         Arguments:
@@ -41,7 +43,10 @@ class CUPSCollector:
         self.host = host
         self.port = port
         self.user = user
+        self.password = password
 
+    def getPass(self, _):
+        return self.password
 
     def collect(self):
         """Collects the metrics from cups
@@ -53,6 +58,7 @@ class CUPSCollector:
         cups.setServer(self.host)
         cups.setPort(self.port)
         cups.setUser(self.user)
+        cups.setPasswordCB(self.getPass)
 
         try:
             conn = cups.Connection()
@@ -62,7 +68,7 @@ class CUPSCollector:
                 [],
                 len(printers))
 
-            self._getPrinterStatus(printers)
+            self._getPrinterStatus(conn, printers)
             self._getJobData(conn)
 
             self._prometheus_metrics['cupsUp'].add_metric([], 1)
@@ -123,18 +129,22 @@ class CUPSCollector:
                 [],
                 len(jobs))
 
-    def _getPrinterStatus(self, printers):
+    def _getPrinterStatus(self, conn, printers):
         """Gathers printer status data
 
         Arguments:
             printers {dict} -- dict of printers
         """
         for key, value in printers.items():
-            if value['printer-state-reasons'][0] != 'none':
+            state = value['printer-state']
+            stateMsg = value['printer-state-reasons'][0]
+            if stateMsg != 'none':
+                if state == 5:
+                    conn.enablePrinter(key)
                 self._prometheus_metrics['printerStatus'].add_metric([
                     key,
                     value['printer-make-and-model'],
-                    value['printer-state-reasons'][0]],
+                    stateMsg],
                     0)
             else:
                 self._prometheus_metrics['printerStatus'].add_metric([
@@ -146,10 +156,14 @@ class CUPSCollector:
 
 if __name__ == '__main__':
     # Start up the server to expose the metrics.
-    REGISTRY.register(CUPSCollector(
-        args.cups_host,
-        args.cups_port,
-        args.cups_user))
+    REGISTRY.register(
+        CUPSCollector(
+            args.cups_host,
+            args.cups_port,
+            args.cups_user,
+            args.cups_password,
+        )
+    )
     start_http_server(args.listen_port)
     while True:
         time.sleep(1)
